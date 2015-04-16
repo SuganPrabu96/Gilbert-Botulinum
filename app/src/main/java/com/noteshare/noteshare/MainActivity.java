@@ -1,13 +1,15 @@
 package com.noteshare.noteshare;
 
-import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.hardware.Camera;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.support.v7.app.ActionBarActivity;
 import android.util.Log;
 import android.view.Menu;
@@ -15,6 +17,11 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
+
+import com.intsig.csopen.sdk.CSOpenAPI;
+import com.intsig.csopen.sdk.CSOpenAPIParam;
+import com.intsig.csopen.sdk.CSOpenApiFactory;
+import com.intsig.csopen.sdk.CSOpenApiHandler;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -26,30 +33,45 @@ import java.util.Date;
 import CameraUtility.CameraPreview;
 
 
+
+
 public class MainActivity extends ActionBarActivity {
 
     private Camera mCamera;
     private CameraPreview mCameraPreview;
     private final int REQUEST_CODE=1;
+    private File pictureFile=null;
+    private CSOpenAPI mApi;
+    private final String camScannerApiKey = "Cy3EQTWeSH2bDMf3D8hX4bJU";
+    private final int REQ_CODE_PICK_IMAGE = 1;
+    private final int REQ_CODE_CALL_CAMSCANNER = 2;
+    private static final String SCANNED_IMAGE = "scanned_img";
+    private static final String SCANNED_PDF = "scanned_pdf";
+    private static final String ORIGINAL_IMG = "ori_img";
+    private String mSourceImagePath;
+    private String mOutputImagePath;
+    private String mOutputPdfPath;
+    private String mOutputOrgPath;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mCamera = getCameraInstance();
+        mApi = CSOpenApiFactory.createCSOpenApi(this, camScannerApiKey, null);
+        if(checkCamera(MainActivity.this))
+            mCamera = getCameraInstance();
         mCameraPreview = new CameraPreview(this,mCamera);
         FrameLayout cameraPreview = (FrameLayout) findViewById(R.id.camera_preview);
         cameraPreview.addView(mCameraPreview);
         Button captureImageButton = (Button) findViewById(R.id.button_capture);
 
-        mCamera.setDisplayOrientation(90);
+        if(mCamera!=null&&checkCamera(MainActivity.this))
+            mCamera.setDisplayOrientation(90);
         captureImageButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 mCamera.takePicture(null, null, mPicture);
-             //   mCamera.stopPreview();
-              //  mCamera.startPreview();
             }
         });
     }
@@ -76,25 +98,23 @@ public class MainActivity extends ActionBarActivity {
         @Override
         public void onPictureTaken(byte[] data, Camera camera) {
             Log.i("Picture taken","Success");
-            File pictureFile = getOutputMediaFile();
+            pictureFile = getOutputMediaFile();
             if(pictureFile==null){
                 return;
             }
             try{
-                String timeExtension = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
                 Log.i("Picture URI",pictureFile.getPath());
                 FileOutputStream fileOutputStream = new FileOutputStream(pictureFile);
-                File file = new File(String.valueOf(pictureFile));
                 fileOutputStream.write(data);
-                Intent intent = new Intent("com.intsig.camscanner.ACTION_SCAN");
-                Uri imgSource = Uri.fromFile(new File(pictureFile.getPath()));
-                intent.putExtra(Intent.EXTRA_STREAM, imgSource);
-                intent.putExtra("scanned_image", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                        +File.separator+"NoteShare"+File.separator+"IMG_"+timeExtension+".jpg");
-                intent.putExtra("pdf_path", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                        + File.separator + "NoteShare" + File.separator + "IMG_" + timeExtension + ".pdf");
-                startActivityForResult(intent,REQUEST_CODE);
                 fileOutputStream.close();
+                Intent i = new Intent(Intent.ACTION_PICK,
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                i.setType("image/*");
+                try {
+                    startActivityForResult(i, REQ_CODE_PICK_IMAGE);
+                } catch (ActivityNotFoundException e) {
+                    e.printStackTrace();
+                }
                 mCamera.stopPreview();
                 mCamera.startPreview();
             }catch(FileNotFoundException e){
@@ -130,29 +150,82 @@ public class MainActivity extends ActionBarActivity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data){
-        if(requestCode==REQUEST_CODE){
-            if(data!=null) {
-                int responseCode = data.getIntExtra("RESULT_OK", -1);
-                if (requestCode == Activity.RESULT_OK) {
-                    Log.i("Processed Image", "Successful");
-                } else if (requestCode == Activity.RESULT_FIRST_USER) {
-                    Log.i("Processed Image", "Failed");
-                } else if (requestCode == Activity.RESULT_CANCELED) {
-                    Log.i("Processed Image", "User Cancelled");
+      public void onActivityResult(int requestCode, int resultCode, Intent data){
+        try {
+            File file = new File(String.valueOf(pictureFile));
+            if (pictureFile != null)
+                file.delete();
+            if(requestCode == REQ_CODE_CALL_CAMSCANNER){
+                mApi.handleResult(requestCode, resultCode, data, new CSOpenApiHandler() {
+
+                    @Override
+                    public void onSuccess() {
+                        Log.i("Image Processed","Successful");
+                    }
+
+                    @Override
+                    public void onError(int errorCode) {
+                        Log.e("Image Processed",String.valueOf(errorCode));
+                    }
+
+                    @Override
+                    public void onCancel() {
+                        Log.i("Image Processed","Cancelled");
+                    }
+                });
+            } else if (requestCode == REQ_CODE_PICK_IMAGE && resultCode == RESULT_OK) {	// result of go2Gallery
+                if (data != null) {
+                    Uri u = data.getData();
+                    Cursor c = getContentResolver().query(u, new String[] { "_data" }, null, null, null);
+                    if (c == null || c.moveToFirst() == false) {
+                        return;
+                    }
+                    mSourceImagePath = c.getString(0);
+                    c.close();
+                    go2CamScanner();
                 }
             }
 
-            else
-                Log.e("Error retrieving","data = null");
-
         }
+        catch (Exception e){
+            Log.e("Error e",e.getMessage());
+        }
+    }
+
+    private void go2CamScanner(){
+        String timeExtension = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        mOutputImagePath = pictureFile.getPath().split("IMG")[0]+timeExtension+".jpg";
+        mOutputPdfPath = pictureFile.getPath().split("IMG")[0]+timeExtension+".jpg";
+        mOutputOrgPath = pictureFile.getPath().split("IMG")[0]+"_ORG"+timeExtension+".jpg";
+
+        try{
+            FileOutputStream fos = new FileOutputStream(mOutputOrgPath);
+        }catch(FileNotFoundException e){
+            e.printStackTrace();
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+
+        CSOpenAPIParam param = new CSOpenAPIParam(mSourceImagePath,mOutputImagePath,mOutputPdfPath,mOutputOrgPath,1.0f);
+        boolean res = mApi.scanImage(this,REQ_CODE_CALL_CAMSCANNER,param);
+        Log.d("Send to CS result", String.valueOf(res));
     }
 
     @Override
     protected void onDestroy(){
         super.onDestroy();
         releaseCamera();
+    }
+
+    @Override
+    protected void onResume(){
+        super.onResume();
+        try {
+            if(mCamera!=null)
+            mCamera.reconnect();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
